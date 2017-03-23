@@ -1,6 +1,8 @@
 package com.github.nathanjsweet.narthan;
 
 import java.util.Base64;
+import java.util.TreeMap;
+import java.util.Map;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -9,6 +11,9 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.BufferedReader;
 import java.io.Writer;
+import java.io.UnsupportedEncodingException;
+
+import java.net.URLDecoder;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
@@ -24,6 +29,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SignatureException;
+import java.security.MessageDigest;
 
 public class Application implements RequestStreamHandler {
 	
@@ -39,43 +45,52 @@ public class Application implements RequestStreamHandler {
 			String authToken = null;
 			String domain = null;
 			JSONObject event = (JSONObject)parser.parse(reader);
-			// X-Twilio-Signature
 			JSONObject pps = (JSONObject)event.get("pathParameters");
+			
 			if (pps == null || pps.get("number") == null) {
-				return finishRequest(outputStream, "400", null);
+				finishRequest(outputStream, "400", null);
+				return;
 			}
-			String numberKey = "p"+pps.get("number");
+			String number = (String)pps.get("number");
+			String numberKey = "p".concat(number);
 
 			authToken = System.getenv(numberKey);
 			if (authToken == null) {
-				return finishRequest(outputStream, "404", null);
+				finishRequest(outputStream, "404", null);
+				return;
 			}
 			
 			domain = System.getenv(DOMAIN);
 			if (domain == null) {
-				return finishRequest(outPutStream, "500", "missing domain environment variable for application");
+				finishRequest(outputStream, "500", "missing domain environment variable for application");
+				return;
 			}
 			JSONObject headers = (JSONObject)event.get("headers");
-			String System.out.println();ath = event.get("path");
-			String body = event.get("body");
+			String path = (String)event.get("path");
+			String body = (String)event.get("body");
 			if (headers == null || headers.get("X-Twilio-Signature") == null || body == null  || path == null) {
-				return finishRequest(outPutStream, "400", null);
+				finishRequest(outputStream, "400", null);
+				return;
 			}
-			String twilioSig = headers.get("X-Twilio-Signature");
+			String twilioSig = (String)headers.get("X-Twilio-Signature");
 			if (body == null || path == null) {
-				return finishRequest(outPutStream, "400", null);
+				finishRequest(outputStream, "400", null);
+				return;
 			}
 			TreeMap<String, String> postBody = splitQuery(body);
 			
 			if (!validateSignature(createRequestBody(domain, path, null, postBody), authToken, twilioSig)) {
-				return finishRequest(outputStream, "400", null);
+				finishRequest(outputStream, "400", null);
+				return;
 			}
 			
 		} catch(ParseException pex) {
-			return finishRequest(outputStream, "400", pex.toString());
-		} catch(Execption ex) {
+			finishRequest(outputStream, "400", pex.toString());
+			return;
+		} catch(Exception ex) {
 			logger.log(ex.toString());
-			return finishRequest(outputStream, "500", null);
+			finishRequest(outputStream, "500", null);
+			return;
 		}
 		finishRequest(outputStream, "204", null);
 
@@ -84,8 +99,8 @@ public class Application implements RequestStreamHandler {
 	private void finishRequest(OutputStream outputStream, String responseCode, String err) throws IOException {
 		JSONObject responseJson = new JSONObject();
 		responseJson.put("statusCode", responseCode);
-		if (msg != null) {
-			responseJson.put("exception", msg)
+		if (err != null) {
+			responseJson.put("exception", err);
 		}
 		OutputStreamWriter writer = new OutputStreamWriter(outputStream, "UTF-8");
 		writer.write(responseJson.toJSONString());  
@@ -118,15 +133,15 @@ public class Application implements RequestStreamHandler {
 		return sb.toString();
 	}
 
-	private static bool validateSignature(String request, String authToken, String sig) throws SignatureException, NoSuchAlgorithmException, InvalidKeyException {
-		SecretKeySpec signingKey = new SecretKeySpec(key.getBytes(), HMAC_SHA1);
+	private static boolean validateSignature(String request, String authToken, String sig) throws SignatureException, NoSuchAlgorithmException, InvalidKeyException {
+		SecretKeySpec signingKey = new SecretKeySpec(authToken.getBytes(), HMAC_SHA1);
 		Mac mac = Mac.getInstance(HMAC_SHA1);
 		mac.init(signingKey);
-		return Base64.getEncoder().encodeToString(mac.doFinal(data.getBytes())).equals(sig)
+		return MessageDigest.isEqual(mac.doFinal(request.getBytes()), sig.getBytes());
 	}
 
-	private static void routeRequest(String domainNumber, TreeMap<String, String> request) {
+	/*private static void routeRequest(String domainNumber, TreeMap<String, String> request) {
 		
-	}
+	  }*/
 
 }
