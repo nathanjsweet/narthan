@@ -4,6 +4,8 @@ import java.util.Base64;
 import java.util.TreeMap;
 import java.util.Map;
 
+import java.nio.charset.StandardCharsets;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -14,6 +16,8 @@ import java.io.Writer;
 import java.io.UnsupportedEncodingException;
 
 import java.net.URLDecoder;
+
+import com.amazonaws.auth.BasicAWSCredentials;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
@@ -35,6 +39,8 @@ public class Application implements RequestStreamHandler {
 	
 	private static final String DOMAIN = "DOMAIN";
 	private static final String HMAC_SHA1 = "HmacSHA1";
+	private static final String AWS_SNS_KEY = "AWS_SNS_KEY";
+	private static final String AWS_SNS_SECRET = "AWS_SNS_SECRET";
 	
 	JSONParser parser = new JSONParser();
 
@@ -56,34 +62,40 @@ public class Application implements RequestStreamHandler {
 
 			authToken = System.getenv(numberKey);
 			if (authToken == null) {
+				logger.log(String.format("attempted request with non-existent number %s", number));
 				finishRequest(outputStream, "404", null);
 				return;
 			}
 			
 			domain = System.getenv(DOMAIN);
 			if (domain == null) {
-				finishRequest(outputStream, "500", "missing domain environment variable for application");
+				logger.log("missing domain environment variable for application");
+				finishRequest(outputStream, "500", null);
 				return;
 			}
 			JSONObject headers = (JSONObject)event.get("headers");
 			String path = (String)event.get("path");
 			String body = (String)event.get("body");
 			if (headers == null || headers.get("X-Twilio-Signature") == null || body == null  || path == null) {
+				logger.log("\"X-Twilio-Signature\" missing");
 				finishRequest(outputStream, "400", null);
 				return;
 			}
 			String twilioSig = (String)headers.get("X-Twilio-Signature");
 			if (body == null || path == null) {
+				logger.log("body or path missing");
 				finishRequest(outputStream, "400", null);
 				return;
 			}
 			TreeMap<String, String> postBody = splitQuery(body);
-			
-			if (!validateSignature(createRequestBody(domain, path, null, postBody), authToken, twilioSig)) {
+			String reqBody = createRequestBody(domain, path, null, postBody);
+			if (!validateSignature(reqBody, authToken, twilioSig)) {
+				logger.log("\"X-Twilio-Signature\" was invalid for request body");
+				logger.log(reqBody);
 				finishRequest(outputStream, "400", null);
 				return;
 			}
-			
+			routeRequest(logger, domain, postBody);
 		} catch(ParseException pex) {
 			finishRequest(outputStream, "400", pex.toString());
 			return;
@@ -137,11 +149,18 @@ public class Application implements RequestStreamHandler {
 		SecretKeySpec signingKey = new SecretKeySpec(authToken.getBytes(), HMAC_SHA1);
 		Mac mac = Mac.getInstance(HMAC_SHA1);
 		mac.init(signingKey);
-		return MessageDigest.isEqual(mac.doFinal(request.getBytes()), sig.getBytes());
+		byte[] digest = Base64.getEncoder().encode(mac.doFinal(request.getBytes(StandardCharsets.UTF_8)));
+		return MessageDigest.isEqual(digest, sig.getBytes());
 	}
 
-	/*private static void routeRequest(String domainNumber, TreeMap<String, String> request) {
-		
-	  }*/
+	private static void routeRequest(LambdaLogger logger, String domainNumber, TreeMap<String, String> request) {
+		logger.log(String.format("domain number: %s", domainNumber));
+		StringBuilder sb = new StringBuilder("BODY:\n{");
+		for (Map.Entry<String, String> entry : request.entrySet()) {
+			sb.append(String.format("\n\t\"%s\":\"%s\",", entry.getKey(), entry.getValue()));
+		}
+		sb.append("\n}");
+		logger.log(sb.toString());
+	}
 
 }
