@@ -35,12 +35,20 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SignatureException;
 import java.security.MessageDigest;
 
+/*
+Todo:
+1. Route Requests properly
+2. Log full lambda object for future troubleshooting
+ */
+
 public class Application implements RequestStreamHandler {
 	
 	private static final String DOMAIN = "DOMAIN";
 	private static final String HMAC_SHA1 = "HmacSHA1";
 	private static final String AWS_SNS_KEY = "AWS_SNS_KEY";
 	private static final String AWS_SNS_SECRET = "AWS_SNS_SECRET";
+	private static final String NON_NUMERIC = "[\\D]";
+	private static final String TWILIO_API = "https://api.twilio.com/2010-04-01/Accounts/%s/Messages"
 	
 	JSONParser parser = new JSONParser();
 
@@ -48,8 +56,6 @@ public class Application implements RequestStreamHandler {
 		LambdaLogger logger = context.getLogger();
 		BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
 		try {
-			String authToken = null;
-			String domain = null;
 			JSONObject event = (JSONObject)parser.parse(reader);
 			JSONObject pps = (JSONObject)event.get("pathParameters");
 			
@@ -57,22 +63,23 @@ public class Application implements RequestStreamHandler {
 				finishRequest(outputStream, "400", null);
 				return;
 			}
-			String number = (String)pps.get("number");
-			String numberKey = "p".concat(number);
 
-			authToken = System.getenv(numberKey);
-			if (authToken == null) {
+			String number = (String)pps.get("number");
+			String sidNumber = System.getenv("SID_".concat(number));
+			String authToken = System.getenv("AUTH_".concat(number));
+			if (authToken == null || sidNumber == null) {
 				logger.log(String.format("attempted request with non-existent number %s", number));
 				finishRequest(outputStream, "404", null);
 				return;
 			}
 			
-			domain = System.getenv(DOMAIN);
+			String domain = System.getenv(DOMAIN);
 			if (domain == null) {
 				logger.log("missing domain environment variable for application");
 				finishRequest(outputStream, "500", null);
 				return;
 			}
+
 			JSONObject headers = (JSONObject)event.get("headers");
 			String path = (String)event.get("path");
 			String body = (String)event.get("body");
@@ -81,12 +88,14 @@ public class Application implements RequestStreamHandler {
 				finishRequest(outputStream, "400", null);
 				return;
 			}
+
 			String twilioSig = (String)headers.get("X-Twilio-Signature");
 			if (body == null || path == null) {
 				logger.log("body or path missing");
 				finishRequest(outputStream, "400", null);
 				return;
 			}
+
 			TreeMap<String, String> postBody = splitQuery(body);
 			String reqBody = createRequestBody(domain, path, null, postBody);
 			if (!validateSignature(reqBody, authToken, twilioSig)) {
@@ -95,7 +104,8 @@ public class Application implements RequestStreamHandler {
 				finishRequest(outputStream, "400", null);
 				return;
 			}
-			routeRequest(logger, domain, postBody);
+
+			routeRequest(number, sidNumber, authToken, postBody);
 		} catch(ParseException pex) {
 			finishRequest(outputStream, "400", pex.toString());
 			return;
@@ -153,14 +163,93 @@ public class Application implements RequestStreamHandler {
 		return MessageDigest.isEqual(digest, sig.getBytes());
 	}
 
-	private static void routeRequest(LambdaLogger logger, String domainNumber, TreeMap<String, String> request) {
-		logger.log(String.format("domain number: %s", domainNumber));
-		StringBuilder sb = new StringBuilder("BODY:\n{");
-		for (Map.Entry<String, String> entry : request.entrySet()) {
-			sb.append(String.format("\n\t\"%s\":\"%s\",", entry.getKey(), entry.getValue()));
+	private static void routeRequest(String domainNumber, String sidNumber, String authToken, TreeMap<String, String> request) throws Exception {
+		String to = request.get("To");
+		if (to == null) {
+			throw new Exception("message is not to any specific number");
 		}
-		sb.append("\n}");
-		logger.log(sb.toString());
+		to = to.replaceAll(NON_NUMERIC, "");
+		if (to.indexOf('1') == 0) {
+			to = to.substring(1);
+		}
+		if(!domainNumber.replaceAll(NON_NUMERIC, "").equals(to)) {
+			throw new Exception(String.format("message target, %s, does not match domain, %s", to, domainNumber));
+		}
+		String body = request.get("Body");
+		if (body == null) {
+			throw new Exception("no body in message");
+		}
+		body = body.trim();
+
+		String[] sp = body.split("\\s+", 2);
+		String cmd = sp[0];
+		String realBody = null;
+		if (sp.length > 1) {
+			realBody = sp[1];
+		}
+		switch(cmd) {
+		case "help":
+			break;
+		case "subscribe":
+			break;
+		case "unsubscribe":
+			break;
+		case "group":
+			break;
+		}
 	}
 
+	private static void help(String body, TreeMap<String, String> request) throws Exception {
+	}
+
+	private static void sendTwilioMessage(String to, String from, String body, String sid, String authToken) throws Exception {
+		HttpURLConnection connection = null;
+		Exception ex = null;
+		try {
+			//Create connection
+			URL url = new URL(String.format(TWILIO_API, sid));
+			connection = (HttpURLConnection) url.openConnection();
+			connection.setRequestMethod("POST");
+			connection.setRequestProperty("Content-Type", "application/json");
+			JSONObject reqObj = new JSONObject();
+			reqObj.put("To", to);
+			reqObj.put("From", from);
+			reqObj.put("Body", body);
+			byte[] reqBody = reqObj.toJSONString().getBytes();
+			connection.setRequestProperty("Content-Length", Integer.toString(reqBody.length));
+			connection.setRequestProperty("Authorization", String.format("Basic %s", String(Base64.getEncoder().encode(String.format("%s:%s", sid, authToken)), "UTF-8")));  
+
+			connection.setUseCaches(false);
+			connection.setDoOutput(true);
+
+			//Send request
+			DataOutputStream wr = new DataOutputStream(connection.getOutputStream());
+			wr.writeBytes(reqBody);
+			wr.close();
+
+			//Get Response
+			InputStream is = connection.getInputStream();
+			BufferedReader rd = new BufferedReader(new InputStreamReader(is));
+			StringBuilder response = new StringBuilder(); // or StringBuffer if Java version 5+
+			String line;
+			while ((line = rd.readLine()) != null) {
+				response.append(line);
+				response.append('\r');
+			}
+			rd.close();
+			return response.toString();
+		} catch (Exception e) {
+			ex = e;
+		} finally {
+			if (connection != null) {
+				connection.disconnect();
+			}
+		}
+		if(ex != null) {
+			throw ex;
+		}
+	}
+
+
 }
+
