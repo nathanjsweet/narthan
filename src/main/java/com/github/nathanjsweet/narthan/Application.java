@@ -281,7 +281,7 @@ public class Application implements RequestStreamHandler {
 		default:
 			sb.append("ayuda [command]\n\n");
 			sb.append("subscribe [group-name] [group-code]\n\n");
-			sb.append("unsubscribe [group-name]");
+			sb.append("unsubscribe [group-name]\n\n");
 			sb.append("list\n\n");
 			sb.append("group [group-command] ...");
 			break;
