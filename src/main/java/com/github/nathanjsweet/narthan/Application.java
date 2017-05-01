@@ -451,6 +451,12 @@ public class Application implements RequestStreamHandler {
 			ayuda(to, "group");
 			return;
 		}
+		// list is the only command that cannot run without
+		// an argument.
+		if (body.trim().toLowerCase().equals("list")) {
+			groupList(to, "");
+			return;
+		}
 		String[] sp = body.split("\\s+", 2);
 		if (sp.length < 2) {
 			log("group command sent without any text");
