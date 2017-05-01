@@ -3,6 +3,7 @@ package com.github.nathanjsweet.narthan;
 import java.lang.Long;
 
 import java.util.Base64;
+import java.util.Collection;
 import java.util.TreeMap;
 import java.util.Map;
 import java.util.HashMap;
@@ -493,7 +494,7 @@ public class Application implements RequestStreamHandler {
 			groupDelete(to, realBody);
 			break;
 		case "list":
-			//blah
+			groupList(to, realBody);
 			break;
 		default:
 			ayuda(to, "group");
@@ -677,6 +678,55 @@ public class Application implements RequestStreamHandler {
 		sendTwilioMessage(to, String.format("Successfully deleted the group %s", groupName));
 	}
 
+	private void groupList(String to, String body) throws Exception {
+		body = body.trim().toLowerCase();
+		if (body.length()  == 0) {
+			Collection<String> groupNames = null;
+			try {
+				groupNames = getAllGroupNames();
+			} catch(Exception e) {
+				log(e.toString());
+				sendTwilioMessage(to, "Failed to get list of groups, please contact administrator.");
+				return;
+			}
+			sendTwilioMessage(to, String.join("\n", groupNames));
+			return;
+		}
+		if (!body.matches(ALPHA_NUMERIC)) {
+			ayuda(to, "group list");
+			return;
+		}
+		String groupName = body;
+		Map<String, String> meta = null;
+		try {
+			meta = getGroupMeta(groupName);
+		} catch (Exception e) {
+			log(e.toString());
+			meta = null;
+		}
+		if (meta == null) {
+			log("group list command sent for non existent group %s", groupName);
+			sendTwilioMessage(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
+			return;
+		}
+		String sendBody;
+		try {
+			final StringBuilder sb = new StringBuilder();
+			subscriptionsByTopic(meta.get("arn"), (Subscription sub) -> {
+					sb.append(sub.getEndpoint());
+					sb.append("\n");
+					return true;
+				});
+			sendBody = sb.toString();
+			
+		} catch(Exception e) {
+			log(e.toString());
+			sendBody = String.format("There was an error retrieving the subscriptions in \"%s\". Contact the administrator to fix it.", groupName);
+			
+		}
+		sendTwilioMessage(to, sendBody);
+	}
+
 	private void sendTwilioMessage(String to, String body) throws Exception {
 		Message message = Message.creator(new PhoneNumber(to), new PhoneNumber(TwilioNumber), body).create();
 		log("message sid: %s", message.getSid());
@@ -798,6 +848,13 @@ public class Application implements RequestStreamHandler {
 			}
 		}
 		return success;
+	}
+
+	private static Collection<String> getAllGroupNames() throws Exception {
+		ListTagsRequest ltr = new ListTagsRequest();
+		ltr.setResource(LambdaARN);
+		ListTagsResult res = LambdaClient.listTags(ltr);
+		return res.getTags().keySet();
 	}
 
 	private static void textTopic(String topicARN, String text) throws Exception {
