@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.ArrayList;
 
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicReference;
 
 import java.nio.charset.StandardCharsets;
 
@@ -39,7 +40,7 @@ import com.amazonaws.services.lambda.runtime.RequestStreamHandler;
 import com.amazonaws.services.lambda.model.ListTagsRequest;
 import com.amazonaws.services.lambda.model.ListTagsResult;
 import com.amazonaws.services.lambda.model.TagResourceRequest;
-
+import com.amazonaws.services.lambda.model.UntagResourceRequest;
 
 import com.amazonaws.services.sns.AmazonSNSClient;
 import com.amazonaws.services.sns.model.ListSubscriptionsByTopicResult;
@@ -50,7 +51,14 @@ import com.amazonaws.services.sns.model.CreateTopicRequest;
 import com.amazonaws.services.sns.model.CreateTopicResult;
 import com.amazonaws.services.sns.model.PublishRequest;
 import com.amazonaws.services.sns.model.ListSubscriptionsByTopicRequest;
-
+import com.amazonaws.services.sns.model.ListSubscriptionsResult;
+import com.amazonaws.services.sns.model.ListSubscriptionsRequest;
+import com.amazonaws.services.sns.model.ListTopicsResult;
+import com.amazonaws.services.sns.model.ListTopicsRequest;
+import com.amazonaws.services.sns.model.DeleteTopicRequest;
+import com.amazonaws.services.sns.model.DeleteTopicResult;
+import com.amazonaws.services.sns.model.UnsubscribeRequest;
+import com.amazonaws.services.sns.model.Topic;
 
 import org.json.simple.JSONObject;
 import org.json.simple.JSONArray;
@@ -93,7 +101,7 @@ public class Application implements RequestStreamHandler {
 	private static String TwilioNumber = System.getenv(TWILIO_NUMBER);
 
 	private static interface SubscriptionOperator {
-		public bool op(Subscription sub);
+		public boolean op(Subscription sub);
 	}
 
 	static {
@@ -243,25 +251,25 @@ public class Application implements RequestStreamHandler {
 		switch(cmd) {
 		case "ayuda":
 			if(admin) {
-				ayuda(from, realBody, request);
+				ayuda(from, realBody);
 			}
 			break;
 		case "subscribe":
-			subscribe(from, from, realBody, request);
+			subscribe(from, from, realBody, admin);
 			break;
 		case "unsubscribe":
-			unsubscribe(from, from, realBody, request, admin);
+			unsubscribe(from, from, realBody, admin);
 			break;
 		case "group":
 			if(admin) {
-				group(from, realBody, request);
+				group(from, realBody);
 			}
 			break;
 		}
 		return "204";
 	}
 
-	private void ayuda(String to, String body, TreeMap<String, String> request) throws Exception {
+	private void ayuda(String to, String body) throws Exception {
 		String cmd = "";
 		String realBody = null;
 		if (body != null) {
@@ -342,7 +350,7 @@ public class Application implements RequestStreamHandler {
 		return sb;
 	}
 	
-	private void subscribe(String to, String number, String body, TreeMap<String, String> request, boolean admin) throws Exception {
+	private void subscribe(String to, String number, String body, boolean admin) throws Exception {
 		String group = null;
 		String code = null;
 		if (!admin) {
@@ -351,8 +359,8 @@ public class Application implements RequestStreamHandler {
 				log("subscribe request from %s sent without group or code", to);
 				return;
 			}
-			String group = sp[0].toLowerCase();
-			String code = sp[1].toLowerCase();
+			group = sp[0].toLowerCase();
+			code = sp[1].toLowerCase();
 		} else {
 			group = body.toLowerCase();
 		}
@@ -398,9 +406,9 @@ public class Application implements RequestStreamHandler {
 		sendTwilioMessage(to, String.format("%s now subscribed to %s.", who, group));
 	}
 
-	private void unsubscribe(String to, String number, String body, TreeMap<String, String> request, boolean admin) throws Exception {
+	private void unsubscribe(String to, String number, String body, boolean admin) throws Exception {
 		body = body.trim().toLowerCase();
-		if (body.length == 0) {
+		if (body.length() == 0) {
 			log("unsubscribe request from %s sent without group", to);
 			return;
 		}
@@ -412,7 +420,7 @@ public class Application implements RequestStreamHandler {
 				log("unsubsribe attempted on group %s, not listed", group);
 				return;
 			}
-			arn = meta.get("arn");
+			String arn = meta.get("arn");
 			if (arn == null) {
 				throwException("meta data on group %s missing arn", group);
 			}
@@ -437,70 +445,71 @@ public class Application implements RequestStreamHandler {
 		}
 	}
 
-	private void group(String to, String body, TreeMap<String, String> request) throws Exception {
+	private void group(String to, String body) throws Exception {
 		if (body == null) {
-			ayuda(to, "group", request);
+			ayuda(to, "group");
 			return;
 		}
 		String[] sp = body.split("\\s+", 2);
 		if (sp.length < 2) {
 			log("group command sent without any text");
-			ayuda(to, "group", request);
+			ayuda(to, "group");
 			return;
 		}
 		String cmd = sp[0].toLowerCase();
 		String realBody = sp[1].trim();
+		String[] sp2;
 		switch(cmd){
 		case "text":
-			groupText(to, realBody, request);
+			groupText(to, realBody);
 			break;
 		case "code":
-			groupCode(to, realBody, request);
+			groupCode(to, realBody);
 			break;
 		case "subscribe":
-			String[] sp2 = reaBody.split("\\s+", 2);
+			sp2 = realBody.split("\\s+", 2);
 			if (sp2.length < 2) {
 				log("subscribe request from %s sent without group", to);
 			} else {
 				String number = sp[0].replaceAll(NON_NUMERIC, "");
 				String group = sp[1];
-				subscribe(to, number, group, request, true);
+				subscribe(to, number, group, true);
 			}
 			break;
 		case "unsubscribe":
-			String[] sp2 = reaBody.split("\\s+", 2);
+			sp2 = realBody.split("\\s+", 2);
 			if (sp2.length < 2) {
 				log("unsubscribe request from %s sent without group", to);
 			} else {
 				String number = sp[0].replaceAll(NON_NUMERIC, "");
 				String group = sp[1];
-				unsubscribe(to, number, group, request, true);
+				unsubscribe(to, number, group, true);
 			}
 			break;
 		case "create":
-			groupCreate(to, realBody, request);
+			groupCreate(to, realBody);
 			break;
 		case "delete":
-			// unimplemented
+			groupDelete(to, realBody);
 			break;
 		case "list":
 			//blah
 			break;
 		default:
-			ayuda(to, "group", request);
+			ayuda(to, "group");
 			return;
 		}
 	}
 
-	private void groupText(String to, String body, TreeMap<String, String> request) throws Exception {
+	private void groupText(String to, String body) throws Exception {
 		String[] sp = body.split("\\s+", 2);
 		if (sp.length < 2) {
-			ayuda(to, "group text", request);
+			ayuda(to, "group text");
 			return;
 		}
 		String groupName = sp[0].toLowerCase();
 		String realBody = sp[1];
-		boolean success = false;
+		boolean success = true;
 		String who = null;
 		if (!groupName.equals("*")) {
 			Map<String, String> meta = null;
@@ -520,11 +529,21 @@ public class Application implements RequestStreamHandler {
 				log("could not find group arn for group %s for a group text command", groupName);
 				sendTwilioMessage(to, String.format("It looks like the group %s exists, but it is malformed in the system, please call the administrator to fix it.", groupName));
 			}
-			success = textTopic(arn, realBody);
-			who = String.format("group %s", groupName)
+			try{
+				textTopic(arn, realBody);
+			} catch(Exception e) {
+				log(e.toString());
+				success = false;
+			}
+			who = String.format("group %s", groupName);
 			
 		} else {
-			success = textAllTopics(realBody);
+			try{
+				textAllTopics(realBody);
+			} catch(Exception e) {
+				log(e.toString());
+				success = false;
+			}
 			who = "everyone";
 		}
 		if (!success) {
@@ -535,7 +554,7 @@ public class Application implements RequestStreamHandler {
 	}
 
 
-	private void groupCode(String to, String body, TreeMap<String, String> request) throws Exception {
+	private void groupCode(String to, String body) throws Exception {
 		Map<String, String> meta = null;
 		String groupName = body.toLowerCase();
 		try {
@@ -585,10 +604,10 @@ public class Application implements RequestStreamHandler {
 		sendTwilioMessage(to, String.format("The subscribe code (for the next 15 minutes) for %s is \"%s\"", groupName, code));
 	}
 
-	private void groupCreate(String to, String body, TreeMap<String, String> request) throws Exception {
+	private void groupCreate(String to, String body) throws Exception {
 		body = body.toLowerCase();
 		if (!body.matches(ALPHA_NUMERIC)) {
-			ayuda(to, "group create", request);
+			ayuda(to, "group create");
 			return;
 		}
 		boolean success = true;
@@ -600,17 +619,15 @@ public class Application implements RequestStreamHandler {
 			log(e.toString());
 			success = false;
 		}
-		if (!success) {
-			sendTwilioMessage(to, String.format("There was an error creating the group %s. Contact the administrator to fix it.", groupName));
-			return;
-		}
-		try {
-			HashMap map = new HashMap();
-			map.put("arn", ctr.getTopicArn());
-			setGroupMeta(groupName, map);
-		} catch(Exception e) {
-			log(e.toString());
-			success = false;
+		if (success) {
+			try {
+				HashMap map = new HashMap();
+				map.put("arn", ctr.getTopicArn());
+				setGroupMeta(groupName, map);
+			} catch(Exception e) {
+				log(e.toString());
+				success = false;
+			}
 		}
 		if (!success) {
 			sendTwilioMessage(to, String.format("There was an error creating the group %s. Contact the administrator to fix it.", groupName));
@@ -619,55 +636,103 @@ public class Application implements RequestStreamHandler {
 		sendTwilioMessage(to, String.format("Successfully created the group %s", groupName));
 	}
 
+	private void groupDelete(String to, String body) throws Exception {
+		body = body.toLowerCase();
+		if (!body.matches(ALPHA_NUMERIC)) {
+			ayuda(to, "group delete");
+			return;
+		}
+		String groupName = body;
+		Map<String, String> meta = null;
+		try {
+			meta = getGroupMeta(groupName);
+		} catch (Exception e) {
+			log(e.toString());
+			meta = null;
+		}
+		if (meta == null) {
+			log("group delete command sent for non existent group %s", groupName);
+			sendTwilioMessage(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
+			return;
+		}
+		boolean success = true;
+		try {
+			SNSClient.deleteTopic(new DeleteTopicRequest(meta.get("arn")));
+		} catch(Exception e) {
+			log(e.toString());
+			success = false;
+		}
+		if (success) {
+			try {
+				unsetGroup(groupName);
+			} catch(Exception e) {
+				log(e.toString());
+				success = false;
+			}
+		}
+		if (!success) {
+			sendTwilioMessage(to, String.format("There was an error deleting the group %s. Contact the administrator to fix it.", groupName));
+			return;
+		}
+		sendTwilioMessage(to, String.format("Successfully deleted the group %s", groupName));
+	}
+
 	private void sendTwilioMessage(String to, String body) throws Exception {
 		Message message = Message.creator(new PhoneNumber(to), new PhoneNumber(TwilioNumber), body).create();
 		log("message sid: %s", message.getSid());
 	}
 
 	private static boolean isAdmin(String number) throws Exception {
-		boolean admin = false;
+		final AtomicReference<Boolean> admin = new AtomicReference<Boolean>(new Boolean(false));
 		subscriptionsByTopic(AdminARN, (Subscription sub) -> {
 				if(sub.getEndpoint().replaceAll(NON_NUMERIC, "").equals(number)) {
-					admin = true;
+					admin.set(new Boolean(true));
 					return false;
 				}	
 				return true;
 			});
-		return admin;
+		return admin.get().booleanValue();
 	}
 
 	private static boolean unsubscribeFromTopic(String number, String topicARN) throws Exception {
-		String subARN = null;
+		final AtomicReference<String> subARN = new AtomicReference<String>(null);
 		subscriptionsByTopic(topicARN, (Subscription sub) -> {
 				if(sub.getEndpoint().replaceAll(NON_NUMERIC, "").equals(number)) {
-					subARN = sub.getSubscriptionArn()
+					subARN.set(sub.getSubscriptionArn());
 					return false;
-				}	
+				}
 				return true;
 			});
-		if (subARN != null) {
-			SNSClient.unsubscribe(new UnsubscribeRequest(subARN));
+		String arn = subARN.get();
+		if (arn != null) {
+			SNSClient.unsubscribe(new UnsubscribeRequest(arn));
 			return true;
 		}
 		return false;
 	}
 
 	private static boolean unsubscribeFromAllTopics(String number) throws Exception {
-		boolean success = false;
+		final AtomicReference<Boolean> success = new AtomicReference<Boolean>(new Boolean(false));
+		final AtomicReference<Boolean> exception = new AtomicReference<Boolean>(new Boolean(false));
+		final StringBuilder sb = new StringBuilder();
 		allSubscriptions((Subscription sub) -> {
 				if(sub.getEndpoint().replaceAll(NON_NUMERIC, "").equals(number)) {
 					String arn = sub.getSubscriptionArn();
 					try {
 						SNSClient.unsubscribe(new UnsubscribeRequest(arn));
 					} catch(Exception e) {
-						log(e.toString());
+						exception.set(new Boolean(true));
+						sb.append(e.toString());
 						return true;
 					}
-					success = true;
+					success.set(true);
 				}
 				return true;
 			});
-		return list.length > 0;
+		if (exception.get().booleanValue()) {
+			throw new Exception(sb.toString());
+		}
+		return success.get().booleanValue();
 	}
 
 
@@ -722,23 +787,21 @@ public class Application implements RequestStreamHandler {
 			nextToken = resN.getNextToken();
 		}
 		boolean success = true;
+		StringBuilder sb = new StringBuilder();
 		for(Topic topic : topics) {
 			String arn = topic.getTopicArn();
-			if(!textTopic(arn, text)) {
+			try{
+				textTopic(arn, text);
+			} catch(Exception e) {
+				sb.append(e.toString());
 				success = false;
 			}
 		}
 		return success;
 	}
 
-	private static boolean textTopic(String topicARN, String text) {
-		try {
-			SNSClient.publish(new PublishRequest(arn, text));
-		} catch(Exception e) {
-			log(e.toString());
-			return false;
-		}
-		return true;
+	private static void textTopic(String topicARN, String text) throws Exception {
+		SNSClient.publish(new PublishRequest(topicARN, text));
 	}
 
 	private static boolean iterateOverSubscriptions(List<Subscription> subs, SubscriptionOperator operator) throws Exception {
@@ -778,8 +841,17 @@ public class Application implements RequestStreamHandler {
 		}
 		trr.addTagsEntry(group, encodeJSONTag(obj.toJSONString()));
 		LambdaClient.tagResource(trr);
-		
 	}
+
+	private static void unsetGroup(String group) throws Exception {
+		UntagResourceRequest urr = new UntagResourceRequest();
+		urr.setResource(LambdaARN);
+		List<String> keys = new ArrayList<String>();
+		keys.add(group);
+		urr.setTagKeys(keys);
+		LambdaClient.untagResource(urr);
+	}
+	
 
 	private static String encodeJSONTag(String json) throws Exception {
 		return new String(Base64.getEncoder().encode(json.getBytes()), "UTF-8");
