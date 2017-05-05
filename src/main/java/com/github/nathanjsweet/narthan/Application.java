@@ -28,10 +28,6 @@ import java.io.UnsupportedEncodingException;
 
 import java.net.URLDecoder;
 
-import com.twilio.Twilio;
-import com.twilio.rest.api.v2010.account.Message;
-import com.twilio.type.PhoneNumber;
-
 import com.amazonaws.auth.BasicAWSCredentials;
 
 import com.amazonaws.services.lambda.AWSLambdaClient;
@@ -87,7 +83,6 @@ public class Application implements RequestStreamHandler {
 	
 	private static final String NON_NUMERIC = "[\\D]";
 	private static final String ALPHA_NUMERIC = "^[\\w]+$";
-	private static final String TWILIO_API = "https://api.twilio.com/2010-04-01/Accounts/%s/Messages";
 	private static final String[] RANDOM_CHARS = {"B", "C", "D", "F", "G", "H", "J", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "X","Z", "2", "4", "5", "6", "7", "8", "9"};
 
 	private static BasicAWSCredentials AWSCreds = new BasicAWSCredentials(System.getenv(AWS_SNS_KEY), System.getenv(AWS_SNS_SECRET));
@@ -105,17 +100,32 @@ public class Application implements RequestStreamHandler {
 		public boolean op(Subscription sub);
 	}
 
-	static {
-		Twilio.init(TwilioSid, TwilioAuth);
+	private static class Response {
+		public String[] Messages;
+		
+		public Response(String ...messages) {
+			Messages = messages;
+		}
+
+		public String toXMLString() {
+			StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<Response>");
+			for (String msg : Messages) {
+				sb.append("\n\t<Message>");
+				sb.append(msg);
+				sb.append("</Message>");
+			}
+			sb.append("\n</Response>");
+			return sb.toString();
+		}
 	}
-	
+
 	private LambdaLogger logger = null;
 
 
 	public void handleRequest(InputStream inputStream, OutputStream outputStream, Context context) throws IOException {
 		logger = context.getLogger();
 		BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
-		String statusCode = "204";
+		Response res = null;
 		try {
 			JSONParser parser = new JSONParser();
 			JSONObject event = (JSONObject)parser.parse(reader);
@@ -132,14 +142,14 @@ public class Application implements RequestStreamHandler {
 			String body = (String)event.get("body");
 			if (headers == null || headers.get("X-Twilio-Signature") == null || body == null  || path == null) {
 				log("\"X-Twilio-Signature\" missing");
-				finishRequest(outputStream, "400", null);
+				finishRequest(outputStream, null);
 				return;
 			}
 
 			String twilioSig = (String)headers.get("X-Twilio-Signature");
 			if (body == null || path == null) {
 				log("body or path missing");
-				finishRequest(outputStream, "400", null);
+				finishRequest(outputStream, null);
 				return;
 			}
 
@@ -148,20 +158,16 @@ public class Application implements RequestStreamHandler {
 			if (!validateSignature(reqBody, twilioSig)) {
 				log("\"X-Twilio-Signature\" was invalid for request body");
 				log(reqBody);
-				finishRequest(outputStream, "400", null);
+				finishRequest(outputStream, null);
 				return;
 			}
-
-			statusCode = routeRequest(postBody);
-		} catch(ParseException pex) {
-			finishRequest(outputStream, "400", pex.toString());
-			return;
+			res = routeRequest(postBody);
 		} catch(Exception ex) {
 			log(ex.toString());
-			finishRequest(outputStream, "500", null);
+			finishRequest(outputStream, null);
 			return;
 		}
-		finishRequest(outputStream, statusCode, null);
+		finishRequest(outputStream, res);
 
 	}
 
@@ -173,12 +179,18 @@ public class Application implements RequestStreamHandler {
 		throw new Exception(String.format(format, args));
 	}
 
-	private void finishRequest(OutputStream outputStream, String responseCode, String err) throws IOException {
+	private void finishRequest(OutputStream outputStream, Response res) throws IOException {
 		JSONObject responseJson = new JSONObject();
-		responseJson.put("statusCode", responseCode);
-		if (err != null) {
-			responseJson.put("exception", err);
+		if(res == null) {
+			responseJson.put("statusCode", "204");
+		} else {
+			responseJson.put("statusCode", "200");
+			JSONObject headers = new JSONObject();
+			headers.put("Content-Type", "application/xml");
+			responseJson.put("headers", headers);
+			responseJson.put("body", res.toXMLString());
 		}
+		
 		OutputStreamWriter writer = new OutputStreamWriter(outputStream, "UTF-8");
 		writer.write(responseJson.toJSONString());  
 		writer.close();
@@ -218,11 +230,11 @@ public class Application implements RequestStreamHandler {
 		return MessageDigest.isEqual(digest, sig.getBytes());
 	}
 
-	private String routeRequest(TreeMap<String, String> request) throws Exception {
+	private Response routeRequest(TreeMap<String, String> request) throws Exception {
 		String to = request.get("To");
 		if (to == null) {
 			log("message is not to any specific number");
-			return "400";
+			return null;
 		}
 		to = to.replaceAll(NON_NUMERIC, "");
 		if (to.indexOf('1') == 0) {
@@ -231,14 +243,14 @@ public class Application implements RequestStreamHandler {
 		String body = request.get("Body");
 		if (body == null) {
 			log("no body in request");
-			return "400";
+			return null;
 		}
 		body = body.trim();
 
 		String from = request.get("From");
 		if (from == null) {
 			log("no from number");
-			return "400";
+			return null;
 		}
 		from = from.replaceAll(NON_NUMERIC, "");
 		boolean admin = isAdmin(from);
@@ -252,25 +264,23 @@ public class Application implements RequestStreamHandler {
 		switch(cmd) {
 		case "ayuda":
 			if(admin) {
-				ayuda(from, realBody);
+				return ayuda(from, realBody);
 			}
 			break;
 		case "subscribe":
-			subscribe(from, from, realBody, admin);
-			break;
+			return subscribe(from, from, realBody, admin);
 		case "unsubscribe":
-			unsubscribe(from, from, realBody, admin);
-			break;
+			return unsubscribe(from, from, realBody, admin);
 		case "group":
 			if(admin) {
-				group(from, realBody);
+				return group(from, realBody);
 			}
 			break;
 		}
-		return "204";
+		return null;
 	}
 
-	private void ayuda(String to, String body) throws Exception {
+	private Response ayuda(String to, String body) throws Exception {
 		String cmd = "";
 		String realBody = null;
 		if (body != null) {
@@ -297,11 +307,10 @@ public class Application implements RequestStreamHandler {
 			sb.append("ayuda [command]\n\n");
 			sb.append("subscribe [group-name] [group-code]\n\n");
 			sb.append("unsubscribe [group-name]\n\n");
-			sb.append("list\n\n");
 			sb.append("group [group-command] ...");
 			break;
 		}
-		sendTwilioMessage(to, sb.toString());
+		return new Response(sb.toString());
 
 	}
 
@@ -351,14 +360,14 @@ public class Application implements RequestStreamHandler {
 		return sb;
 	}
 	
-	private void subscribe(String to, String number, String body, boolean admin) throws Exception {
+	private Response subscribe(String to, String number, String body, boolean admin) throws Exception {
 		String group = null;
 		String code = null;
 		if (!admin) {
 			String[] sp = body.split("\\s+");
 			if (sp.length < 2) {
 				log("subscribe request from %s sent without group or code", to);
-				return;
+				return null;
 			}
 			group = sp[0].toLowerCase();
 			code = sp[1].toLowerCase();
@@ -368,18 +377,18 @@ public class Application implements RequestStreamHandler {
 		Map<String, String> meta = getGroupMeta(group);
 		if (meta == null) {
 			log("subsribe attempted on group %s, with no meta data", group);
-			return;
+			return null;
 		}
 		if (!admin) {
 			String expires = meta.get("expires");
 			if (expires == null) {
 				log("meta data on group %s without expiration", group);
-				return;
+				return null;
 			}
 			long exp = Long.parseLong(expires, 10);
 			if ((new Date()).getTime() >= exp) {
 				log("subscribe attempt on expired code for group %s", group);
-				return;
+				return null;
 			}
 			String c = meta.get("code");
 			if (c == null) {
@@ -387,7 +396,7 @@ public class Application implements RequestStreamHandler {
 			}
 			if (code.equals(c)) {
 				log("subscribe attempt on invalid code for group %s", group);
-				return;
+				return null;
 			}
 		}
 		String arn = meta.get("arn");
@@ -397,21 +406,21 @@ public class Application implements RequestStreamHandler {
 		try {
 			SNSClient.subscribe(new SubscribeRequest(arn, "sms", number));
 		} catch(Exception e) {
-			if(admin) {
-				sendTwilioMessage(to, "There was an error creating this subscription. Perhaps the number is invalid.");
-			}
 			log(e.toString());
-			return;
+			if(admin) {
+				return new Response("There was an error creating this subscription. Perhaps the number is invalid.");
+			}
+			return null;
 		}
 		String who = to.equals(number) ? "You are" : number.concat(" is");
-		sendTwilioMessage(to, String.format("%s now subscribed to %s.", who, group));
+		return new Response(String.format("%s now subscribed to %s.", who, group));
 	}
 
-	private void unsubscribe(String to, String number, String body, boolean admin) throws Exception {
+	private Response unsubscribe(String to, String number, String body, boolean admin) throws Exception {
 		body = body.trim().toLowerCase();
 		if (body.length() == 0) {
 			log("unsubscribe request from %s sent without group", to);
-			return;
+			return null;
 		}
 		String group = body;
 		String text = null;
@@ -419,7 +428,7 @@ public class Application implements RequestStreamHandler {
 			Map<String, String> meta = getGroupMeta(group);
 			if (meta == null) {
 				log("unsubsribe attempted on group %s, not listed", group);
-				return;
+				return null;
 			}
 			String arn = meta.get("arn");
 			if (arn == null) {
@@ -442,37 +451,33 @@ public class Application implements RequestStreamHandler {
 			}
 		}
 		if(text != null) {
-			sendTwilioMessage(to, text);
+			return new Response(text);
 		}
+		return null;
 	}
 
-	private void group(String to, String body) throws Exception {
+	private Response group(String to, String body) throws Exception {
 		if (body == null) {
-			ayuda(to, "group");
-			return;
+			return ayuda(to, "group");
 		}
 		// list is the only command that cannot run without
 		// an argument.
 		if (body.trim().toLowerCase().equals("list")) {
-			groupList(to, "");
-			return;
+			return groupList(to, "");
 		}
 		String[] sp = body.split("\\s+", 2);
 		if (sp.length < 2) {
 			log("group command sent without any text");
-			ayuda(to, "group");
-			return;
+			return ayuda(to, "group");
 		}
 		String cmd = sp[0].toLowerCase();
 		String realBody = sp[1].trim();
 		String[] sp2;
 		switch(cmd){
 		case "text":
-			groupText(to, realBody);
-			break;
+			return groupText(to, realBody);
 		case "code":
-			groupCode(to, realBody);
-			break;
+			return groupCode(to, realBody);
 		case "subscribe":
 			sp2 = realBody.split("\\s+", 2);
 			if (sp2.length < 2) {
@@ -480,7 +485,7 @@ public class Application implements RequestStreamHandler {
 			} else {
 				String number = sp[0].replaceAll(NON_NUMERIC, "");
 				String group = sp[1];
-				subscribe(to, number, group, true);
+				return subscribe(to, number, group, true);
 			}
 			break;
 		case "unsubscribe":
@@ -490,29 +495,25 @@ public class Application implements RequestStreamHandler {
 			} else {
 				String number = sp[0].replaceAll(NON_NUMERIC, "");
 				String group = sp[1];
-				unsubscribe(to, number, group, true);
+				return unsubscribe(to, number, group, true);
 			}
 			break;
 		case "create":
-			groupCreate(to, realBody);
-			break;
+			return groupCreate(to, realBody);
 		case "delete":
-			groupDelete(to, realBody);
-			break;
+			return groupDelete(to, realBody);
 		case "list":
-			groupList(to, realBody);
-			break;
+			return groupList(to, realBody);
 		default:
-			ayuda(to, "group");
-			return;
+			return ayuda(to, "group");
 		}
+		return null;
 	}
 
-	private void groupText(String to, String body) throws Exception {
+	private Response groupText(String to, String body) throws Exception {
 		String[] sp = body.split("\\s+", 2);
 		if (sp.length < 2) {
-			ayuda(to, "group text");
-			return;
+			return ayuda(to, "group text");
 		}
 		String groupName = sp[0].toLowerCase();
 		String realBody = sp[1];
@@ -528,13 +529,12 @@ public class Application implements RequestStreamHandler {
 			}
 			if (meta == null) {
 				log("group text command sent for non existent group %s", groupName);
-				sendTwilioMessage(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
-				return;
+				return new Response(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
 			}
 			String arn = meta.get("arn");
 			if (arn == null) {
 				log("could not find group arn for group %s for a group text command", groupName);
-				sendTwilioMessage(to, String.format("It looks like the group %s exists, but it is malformed in the system, please call the administrator to fix it.", groupName));
+				return new Response(String.format("It looks like the group %s exists, but it is malformed in the system, please call the administrator to fix it.", groupName));
 			}
 			try{
 				textTopic(arn, realBody);
@@ -554,14 +554,13 @@ public class Application implements RequestStreamHandler {
 			who = "everyone";
 		}
 		if (!success) {
-			sendTwilioMessage(to, String.format("I'm sorry I ran into an error trying to send your text to %s. Please contact the administrator to fix it.", who));
-			return;
+			return new Response(String.format("I'm sorry I ran into an error trying to send your text to %s. Please contact the administrator to fix it.", who));
 		}
-		sendTwilioMessage(to, String.format("I sent your text to %s.", who));
+		return new Response(String.format("I sent your text to %s.", who));
 	}
 
 
-	private void groupCode(String to, String body) throws Exception {
+	private Response groupCode(String to, String body) throws Exception {
 		Map<String, String> meta = null;
 		String groupName = body.toLowerCase();
 		try {
@@ -572,13 +571,12 @@ public class Application implements RequestStreamHandler {
 		}
 		if (meta == null) {
 			log("group text command sent for non existent group %s", groupName);
-			sendTwilioMessage(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
-			return;
+			return new Response(String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
 		}
 		String arn = meta.get("arn");
 		if (arn == null) {
 			log("could not find group arn for group %s for a group text command", groupName);
-			sendTwilioMessage(to, String.format("It looks like the group %s exists, but it is malformed in the system, please call the administrator/owner to fix it.", groupName));
+			return new Response(String.format("It looks like the group %s exists, but it is malformed in the system, please call the administrator/owner to fix it.", groupName));
 		}
 		String code = meta.get("code");
 		if (code != null) {
@@ -605,17 +603,15 @@ public class Application implements RequestStreamHandler {
 			success = false;
 		}
 		if (!success) {
-			sendTwilioMessage(to, String.format("There was an error setting the subscribe code for %s, try again in a few seconds. If the problem persists contact the administrator to fix the issue.", groupName));
-			return;
+			return new Response(String.format("There was an error setting the subscribe code for %s, try again in a few seconds. If the problem persists contact the administrator to fix the issue.", groupName));
 		}
-		sendTwilioMessage(to, String.format("The subscribe code (for the next 15 minutes) for %s is \"%s\"", groupName, code));
+		return new Response(String.format("The subscribe code (for the next 15 minutes) for %s is \"%s\"", groupName, code));
 	}
 
-	private void groupCreate(String to, String body) throws Exception {
+	private Response groupCreate(String to, String body) throws Exception {
 		body = body.toLowerCase();
 		if (!body.matches(ALPHA_NUMERIC)) {
-			ayuda(to, "group create");
-			return;
+			return ayuda(to, "group create");
 		}
 		boolean success = true;
 		CreateTopicResult ctr = null;
@@ -637,17 +633,15 @@ public class Application implements RequestStreamHandler {
 			}
 		}
 		if (!success) {
-			sendTwilioMessage(to, String.format("There was an error creating the group %s. Contact the administrator to fix it.", groupName));
-			return;
+			return new Response(String.format("There was an error creating the group %s. Contact the administrator to fix it.", groupName));
 		}
-		sendTwilioMessage(to, String.format("Successfully created the group %s", groupName));
+		return new Response(String.format("Successfully created the group %s", groupName));
 	}
 
-	private void groupDelete(String to, String body) throws Exception {
+	private Response groupDelete(String to, String body) throws Exception {
 		body = body.toLowerCase();
 		if (!body.matches(ALPHA_NUMERIC)) {
-			ayuda(to, "group delete");
-			return;
+			return ayuda(to, "group delete");
 		}
 		String groupName = body;
 		Map<String, String> meta = null;
@@ -659,8 +653,7 @@ public class Application implements RequestStreamHandler {
 		}
 		if (meta == null) {
 			log("group delete command sent for non existent group %s", groupName);
-			sendTwilioMessage(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
-			return;
+			return new Response(String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
 		}
 		boolean success = true;
 		try {
@@ -678,13 +671,12 @@ public class Application implements RequestStreamHandler {
 			}
 		}
 		if (!success) {
-			sendTwilioMessage(to, String.format("There was an error deleting the group %s. Contact the administrator to fix it.", groupName));
-			return;
+			return new Response(String.format("There was an error deleting the group %s. Contact the administrator to fix it.", groupName));
 		}
-		sendTwilioMessage(to, String.format("Successfully deleted the group %s", groupName));
+		return new Response(String.format("Successfully deleted the group %s", groupName));
 	}
 
-	private void groupList(String to, String body) throws Exception {
+	private Response groupList(String to, String body) throws Exception {
 		body = body.trim().toLowerCase();
 		if (body.length()  == 0) {
 			Collection<String> groupNames = null;
@@ -692,15 +684,12 @@ public class Application implements RequestStreamHandler {
 				groupNames = getAllGroupNames();
 			} catch(Exception e) {
 				log(e.toString());
-				sendTwilioMessage(to, "Failed to get list of groups, please contact administrator.");
-				return;
+				return new Response("Failed to get list of groups, please contact administrator.");
 			}
-			sendTwilioMessage(to, String.join("\n", groupNames));
-			return;
+			return new Response(String.join("\n", groupNames));
 		}
 		if (!body.matches(ALPHA_NUMERIC)) {
-			ayuda(to, "group list");
-			return;
+			return ayuda(to, "group list");
 		}
 		String groupName = body;
 		Map<String, String> meta = null;
@@ -712,8 +701,7 @@ public class Application implements RequestStreamHandler {
 		}
 		if (meta == null) {
 			log("group list command sent for non existent group %s", groupName);
-			sendTwilioMessage(to, String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
-			return;
+			return new Response(String.format("I'm sorry, but I couldn't find a group called \"%s\"", groupName));
 		}
 		String sendBody;
 		try {
@@ -730,12 +718,7 @@ public class Application implements RequestStreamHandler {
 			sendBody = String.format("There was an error retrieving the subscriptions in \"%s\". Contact the administrator to fix it.", groupName);
 			
 		}
-		sendTwilioMessage(to, sendBody);
-	}
-
-	private void sendTwilioMessage(String to, String body) throws Exception {
-		Message message = Message.creator(new PhoneNumber(to), new PhoneNumber(TwilioNumber), body).create();
-		log("message sid: %s", message.getSid());
+		return new Response(sendBody);
 	}
 
 	private static boolean isAdmin(String number) throws Exception {
