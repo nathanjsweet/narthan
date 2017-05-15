@@ -363,16 +363,14 @@ public class Application implements RequestStreamHandler {
 	private Response subscribe(String to, String number, String body, boolean admin) throws Exception {
 		String group = null;
 		String code = null;
-		if (!admin) {
-			String[] sp = body.split("\\s+");
-			if (sp.length < 2) {
-				log("subscribe request from %s sent without group or code", to);
-				return null;
-			}
-			group = sp[0].toLowerCase();
-			code = sp[1].toLowerCase();
-		} else {
-			group = body.toLowerCase();
+		String[] sp = body.split("\\s+");
+		if (!admin && sp.length < 2) {
+			log("subscribe request from %s sent without group or code", to);
+			return null;
+		}
+		group = sp[0].trim().toLowerCase();
+		if (sp.length > 1) {
+			code = sp[1].trim().toLowerCase();
 		}
 		Map<String, String> meta = getGroupMeta(group);
 		if (meta == null) {
@@ -394,8 +392,8 @@ public class Application implements RequestStreamHandler {
 			if (c == null) {
 				throwException("meta data on group %s missing code", group);
 			}
-			if (code.equals(c)) {
-				log("subscribe attempt on invalid code for group %s", group);
+			if (!code.equals(c)) {
+				log("subscribe attempt on invalid code, %s, for group %s", code, group);
 				return null;
 			}
 		}
@@ -484,7 +482,7 @@ public class Application implements RequestStreamHandler {
 				log("subscribe request from %s sent without group", to);
 			} else {
 				String number = sp[0].replaceAll(NON_NUMERIC, "");
-				String group = sp[1];
+				String group = sp[1].trim().toLowerCase();
 				return subscribe(to, number, group, true);
 			}
 			break;
