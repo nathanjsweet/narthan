@@ -76,6 +76,7 @@ public class Application implements RequestStreamHandler {
 	private static final String AWS_SNS_KEY = "AWS_KEY";
 	private static final String AWS_SNS_SECRET = "AWS_SECRET";
 	private static final String ADMIN_TOPIC_ARN = "ADMIN_TOPIC_ARN";
+	private static final String ALL_TOPIC_ARN = "ALL_TOPIC_ARN";
 	private static final String LAMBDA_ARN = "LAMBDA_ARN";
 	private static final String TWILIO_SID = "TWILIO_SID";
 	private static final String TWILIO_AUTH = "TWILIO_AUTH";
@@ -95,6 +96,7 @@ public class Application implements RequestStreamHandler {
 	private static String TwilioSid = System.getenv(TWILIO_SID);
 	private static String TwilioAuth = System.getenv(TWILIO_AUTH);
 	private static String TwilioNumber = System.getenv(TWILIO_NUMBER);
+	private static String AllArn = System.getenv(ALL_TOPIC_ARN);
 
 	private static interface SubscriptionOperator {
 		public boolean op(Subscription sub);
@@ -403,12 +405,18 @@ public class Application implements RequestStreamHandler {
 		}
 		try {
 			SNSClient.subscribe(new SubscribeRequest(arn, "sms", number));
+			subscribeToAll(number);
 		} catch(Exception e) {
 			log(e.toString());
 			if(admin) {
 				return new Response("There was an error creating this subscription. Perhaps the number is invalid.");
 			}
 			return null;
+		}
+		try {
+
+		} catch(Exception e) {
+			log(e.toString());
 		}
 		String who = to.equals(number) ? "You are" : number.concat(" is");
 		return new Response(String.format("%s now subscribed to %s.", who, group));
@@ -544,7 +552,7 @@ public class Application implements RequestStreamHandler {
 			
 		} else {
 			try{
-				textAllTopics(realBody);
+				textTopic(AllArn, realBody);
 			} catch(Exception e) {
 				log(e.toString());
 				success = false;
@@ -719,6 +727,24 @@ public class Application implements RequestStreamHandler {
 		return new Response(sendBody);
 	}
 
+	private void subscribeToAll(String number) throws Exception {
+		final AtomicReference<Boolean> isInAll = new AtomicReference<Boolean>(new Boolean(false));
+		subscriptionsByTopic(AllArn, (Subscription sub) -> {
+				if(sub.getEndpoint().replaceAll(NON_NUMERIC, "").equals(number)) {
+					isInAll.set(new Boolean(true));
+					return false;
+				}
+				return true;
+			});
+		if(!isInAll.get().booleanValue()) {
+			try {
+				SNSClient.subscribe(new SubscribeRequest(AllArn, "sms", number));
+			} catch(Exception ex) {
+				throwException("Exception subscribing %s to \"all\" topic: %s", ex.toString());
+			}
+		}
+	}
+
 	private static boolean isAdmin(String number) throws Exception {
 		final AtomicReference<Boolean> admin = new AtomicReference<Boolean>(new Boolean(false));
 		subscriptionsByTopic(AdminARN, (Subscription sub) -> {
@@ -731,18 +757,26 @@ public class Application implements RequestStreamHandler {
 		return admin.get().booleanValue();
 	}
 
-	private static boolean unsubscribeFromTopic(String number, String topicARN) throws Exception {
+	private static boolean unsubscribeFromTopic(final String number, final String topicARN) throws Exception {
 		final AtomicReference<String> subARN = new AtomicReference<String>(null);
-		subscriptionsByTopic(topicARN, (Subscription sub) -> {
+		final AtomicReference<Boolean> deleteAll = new AtomicReference<Boolean>(new Boolean(true));
+		allSubscriptions((Subscription sub) -> {
 				if(sub.getEndpoint().replaceAll(NON_NUMERIC, "").equals(number)) {
-					subARN.set(sub.getSubscriptionArn());
-					return false;
+					String arn = sub.getSubscriptionArn();
+					if(arn.equals(topicARN)) {
+						subARN.set(sub.getSubscriptionArn());
+					} else {
+						deleteAll.set(new Boolean(false));
+					}
 				}
 				return true;
 			});
 		String arn = subARN.get();
 		if (arn != null) {
 			SNSClient.unsubscribe(new UnsubscribeRequest(arn));
+			if(deleteAll.get().booleanValue()) {
+				SNSClient.unsubscribe(new UnsubscribeRequest(AllArn));
+			}
 			return true;
 		}
 		return false;
@@ -812,30 +846,6 @@ public class Application implements RequestStreamHandler {
 
 	}
 
-	private static boolean textAllTopics(String text) throws Exception {
-		ListTopicsResult res = SNSClient.listTopics();
-		List<Topic> topics = res.getTopics();
-		String nextToken = res.getNextToken();
-		while(nextToken != null) {
-			ListTopicsRequest tr = new ListTopicsRequest();
-			tr.setNextToken(nextToken);
-			ListTopicsResult resN = SNSClient.listTopics(tr);
-			topics.addAll(resN.getTopics());
-			nextToken = resN.getNextToken();
-		}
-		boolean success = true;
-		StringBuilder sb = new StringBuilder();
-		for(Topic topic : topics) {
-			String arn = topic.getTopicArn();
-			try{
-				textTopic(arn, text);
-			} catch(Exception e) {
-				sb.append(e.toString());
-				success = false;
-			}
-		}
-		return success;
-	}
 
 	private static Collection<String> getAllGroupNames() throws Exception {
 		ListTagsRequest ltr = new ListTagsRequest();
